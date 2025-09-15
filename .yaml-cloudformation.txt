@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "EC2 con Flask API (api-students) lista para uso"
+
+
+Parameters:
+  InstanceName:
+    Type: String
+    Default: "MV ApiStudents"
+    Description: "Nombre de la instancia EC2"
+  AMI:
+    Type: String
+    Default: "ami-0e84f97592c6b078b"  # Ubuntu 22.04
+    Description: "AMI de Ubuntu 22.04"
+  KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: "joelkey"
+    Description: "Llave SSH para la instancia"
+
+
+Resources:
+  InstanceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Permitir SSH, HTTP y puerto 8000"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: 0.0.0.0/0
+
+
+  EC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref AMI
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+
+
+          # Actualizar e instalar dependencias
+          apt-get update -y
+          apt-get install -y python3 python3-pip python3-setuptools python3-wheel git sqlite3
+
+
+          # Crear usuario para la app
+          useradd -m -r -s /bin/false flaskuser
+
+
+          # Clonar repo y ajustar permisos
+          cd /home/flaskuser
+          git clone https://github.com/JoelxD12O/api-students.git
+          chown -R flaskuser:flaskuser api-students
+          chmod -R 755 api-students
+
+
+          # Instalar Flask y dependencias
+          python3 -m pip install --upgrade pip
+          if [ -f /home/flaskuser/api-students/requirements.txt ]; then
+            python3 -m pip install --upgrade --ignore-installed -r /home/flaskuser/api-students/requirements.txt
+          else
+            python3 -m pip install --upgrade --ignore-installed flask jinja2 werkzeug blinker
+          fi
+
+
+          # Inicializar base de datos
+          sudo -u flaskuser python3 /home/flaskuser/api-students/init_db.py
+
+
+          # Crear archivo systemd
+          cat <<EOF > /etc/systemd/system/apistudents.service
+          [Unit]
+          Description=API Students Flask
+          After=network.target
+
+
+          [Service]
+          User=flaskuser
+          WorkingDirectory=/home/flaskuser/api-students
+          ExecStart=/usr/bin/python3 /home/flaskuser/api-students/app.py
+          Restart=always
+          Environment="PATH=/home/flaskuser/.local/bin:/usr/bin:/bin"
+
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+
+          # Activar y levantar servicio
+          systemctl daemon-reload
+          systemctl enable apistudents.service
+          systemctl start apistudents.service
+
+
+Outputs:
+  InstanceId:
+    Description: "ID de la instancia EC2"
+    Value: !Ref EC2Instance
+  InstancePublicIP:
+    Description: "IP pública de la instancia"
+    Value: !GetAtt EC2Instance.PublicIp
+  API:
+    Description: "URL de la API"
+    Value: !Sub "http://${EC2Instance.PublicIp}:8000"
